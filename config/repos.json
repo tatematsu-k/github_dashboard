@@ -1,0 +1,19 @@
+{
+  "repositories": [
+    {
+      "owner": "tatematsu-k",
+      "name": "email_domain_checker"
+    },
+    {
+      "owner": "tatematsu-k",
+      "name": "github_dashboard"
+    }
+  ],
+  "options": {
+    "collect_reviews": true,
+    "collect_commit_stats": true,
+    "max_workers": 3,
+    "start_date": "2024-01-01T00:00:00Z",
+    "use_cache": true
+  }
+}

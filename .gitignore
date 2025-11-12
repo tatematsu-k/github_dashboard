@@ -7,7 +7,6 @@ env/
 venv/
 ENV/
 .venv
-config/repos.json
 !package.json
 !package-lock.json
 .env
