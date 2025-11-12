@@ -41,7 +41,7 @@ jobs:
 
       - name: Collect GitHub data
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
         run: |
           python scripts/collect_data.py
 

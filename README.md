@@ -85,11 +85,13 @@ GitHub Actionsの自動トークン（`GITHUB_TOKEN`）が使用されます。
 2. リポジトリの Secrets に追加
    - Settings → Secrets and variables → Actions
    - "New repository secret" をクリック
-   - Name: `GITHUB_PAT`
+   - Name: `PAT` (注意: `GITHUB_`で始まる名前は使用できません)
    - Value: 作成したPATを貼り付け
    - "Add secret" をクリック
-3. `.github/workflows/analyze.yml` を無効化（削除またはリネーム）
-4. `.github/workflows/analyze_with_pat.yml` を有効化
+
+**重要**: GitHubのシークレット名は`GITHUB_`で始まる名前は使用できません。`PAT`という名前を使用してください。
+
+**公開リポジトリのみの場合**: プライベートリポジトリにアクセスする必要がない場合は、`secrets.GITHUB_TOKEN`（GitHubが自動提供）を使用することもできます。その場合は、ワークフローファイルの`secrets.PAT`を`secrets.GITHUB_TOKEN`に変更してください。
 
 ### 5. 初回実行
 
