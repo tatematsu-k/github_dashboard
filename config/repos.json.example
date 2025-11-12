@@ -1,0 +1,20 @@
+{
+  "repositories": [
+    {
+      "owner": "owner1",
+      "name": "repo1"
+    },
+    {
+      "owner": "owner2",
+      "name": "repo2"
+    }
+  ],
+  "options": {
+    "collect_reviews": false,
+    "collect_commit_stats": true,
+    "max_workers": 3,
+    "days": 365,
+    "start_date": null,
+    "use_cache": true
+  }
+}
