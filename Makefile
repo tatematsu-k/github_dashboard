@@ -25,4 +25,4 @@ generate:
 all: collect generate
 
 clean:
-	rm -rf data/collected_data.json docs/index.html __pycache__ scripts/__pycache__
+	rm -rf data/collected_data.json docs/index.html __pycache__ scripts/__pycache__ data/cache/

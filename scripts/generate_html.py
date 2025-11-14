@@ -33,13 +33,22 @@ def aggregate_data(data):
             'deletions': 0,
             'contributors': 0
         }),
-        'code_frequency': defaultdict(lambda: {'additions': 0, 'deletions': 0})
+        'code_frequency': defaultdict(lambda: {'additions': 0, 'deletions': 0}),
+        'monthly_contributions': defaultdict(lambda: defaultdict(lambda: {
+            'commits': 0,
+            'additions': 0,
+            'deletions': 0,
+            'prs_created': 0,
+            'prs_merged': 0,
+            'prs_reviewed': 0
+        }))
     }
 
     for repo_data in data['repositories']:
         # PR統計
         aggregated['total_prs'] += len(repo_data['prs'])
-        aggregated['total_merged_prs'] += sum(1 for pr in repo_data['prs'] if pr['state'] == 'closed' and pr['merged_at'])
+        # マージ済みPR: stateが'merged'、またはmerged_atが存在する、またはmerged_byが存在する場合
+        aggregated['total_merged_prs'] += sum(1 for pr in repo_data['prs'] if pr.get('state') == 'merged' or pr.get('merged_at') or pr.get('merged_by'))
 
         # コントリビューター統計
         for contributor, stats in repo_data['contributions'].items():
@@ -57,15 +66,32 @@ def aggregate_data(data):
             aggregated['monthly_stats'][month]['prs_merged'] += stats['prs_merged']
             aggregated['monthly_stats'][month]['additions'] += stats['additions']
             aggregated['monthly_stats'][month]['deletions'] += stats['deletions']
+            # contributorsがセットの場合は数値に変換
+            contributors_count = stats['contributors']
+            if isinstance(contributors_count, (set, list)):
+                contributors_count = len(contributors_count)
+            elif not isinstance(contributors_count, (int, float)):
+                contributors_count = 0
             aggregated['monthly_stats'][month]['contributors'] = max(
                 aggregated['monthly_stats'][month]['contributors'],
-                stats['contributors']
+                contributors_count
             )
 
         # Code frequency
         for month, freq in repo_data['code_frequency'].items():
             aggregated['code_frequency'][month]['additions'] += freq['additions']
             aggregated['code_frequency'][month]['deletions'] += freq['deletions']
+
+        # 月別コントリビューター統計
+        if 'monthly_contributions' in repo_data:
+            for month, contributors in repo_data['monthly_contributions'].items():
+                for contributor, stats in contributors.items():
+                    aggregated['monthly_contributions'][month][contributor]['commits'] += stats.get('commits', 0)
+                    aggregated['monthly_contributions'][month][contributor]['additions'] += stats.get('additions', 0)
+                    aggregated['monthly_contributions'][month][contributor]['deletions'] += stats.get('deletions', 0)
+                    aggregated['monthly_contributions'][month][contributor]['prs_created'] += stats.get('prs_created', 0)
+                    aggregated['monthly_contributions'][month][contributor]['prs_merged'] += stats.get('prs_merged', 0)
+                    aggregated['monthly_contributions'][month][contributor]['prs_reviewed'] += stats.get('prs_reviewed', 0)
 
     # セットを数値に変換
     for contributor in aggregated['contributors']:
@@ -78,6 +104,11 @@ def aggregate_data(data):
     aggregated['contributors'] = dict(aggregated['contributors'])
     aggregated['monthly_stats'] = dict(sorted(aggregated['monthly_stats'].items()))
     aggregated['code_frequency'] = dict(sorted(aggregated['code_frequency'].items()))
+    # monthly_contributionsを通常の辞書に変換
+    monthly_contributions_dict = {}
+    for month, contributors in aggregated['monthly_contributions'].items():
+        monthly_contributions_dict[month] = dict(contributors)
+    aggregated['monthly_contributions'] = monthly_contributions_dict
 
     return aggregated
 
@@ -134,6 +165,17 @@ def generate_html(data, aggregated):
         })
     contributors_list.sort(key=lambda x: x['score'], reverse=True)
 
+    # 合計値を計算
+    total_stats = {
+        'commits': sum(c['commits'] for c in contributors_list),
+        'prs_created': sum(c['prs_created'] for c in contributors_list),
+        'prs_merged': sum(c['prs_merged'] for c in contributors_list),
+        'prs_reviewed': sum(c['prs_reviewed'] for c in contributors_list),
+        'additions': sum(c['additions'] for c in contributors_list),
+        'deletions': sum(c['deletions'] for c in contributors_list),
+        'repositories': len(set(repo for c in contributors_list for repo in c['repos_list']))
+    }
+
     # 月ごとのデータを配列に変換（チャート用）
     monthly_data = []
     all_months = set(aggregated['monthly_stats'].keys()) | set(aggregated['code_frequency'].keys())
@@ -145,6 +187,14 @@ def generate_html(data, aggregated):
             'deletions': 0,
             'contributors': 0
         })
+        # contributorsがセットの場合は数値に変換
+        contributors_count = monthly_stats.get('contributors', 0)
+        if isinstance(contributors_count, (set, list)):
+            contributors_count = len(contributors_count)
+        elif not isinstance(contributors_count, (int, float)):
+            contributors_count = 0
+        monthly_stats['contributors'] = contributors_count
+
         code_freq = aggregated['code_frequency'].get(month, {'additions': 0, 'deletions': 0})
         monthly_data.append({
             'month': month,
@@ -173,352 +223,159 @@ def generate_html(data, aggregated):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GitHub Dashboard - 分析レポート</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#667eea',
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #333;
         }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        .header {
-            background: white;
-            border-radius: 10px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .header h1 {
-            color: #667eea;
-            margin-bottom: 10px;
-        }
-        .header p {
-            color: #666;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .stat-card {
-            background: white;
-            border-radius: 10px;
-            padding: 25px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: transform 0.2s;
-        }
-        .stat-card:hover {
-            transform: translateY(-5px);
-        }
-        .stat-card h3 {
-            color: #667eea;
-            font-size: 14px;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .stat-card .value {
-            font-size: 36px;
-            font-weight: bold;
-            color: #333;
-        }
-        .section {
-            background: white;
-            border-radius: 10px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .section h2 {
-            color: #667eea;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #f0f0f0;
-        }
-        .chart-container {
-            position: relative;
-            height: 400px;
-            margin-bottom: 30px;
-        }
-        .contributors-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        .contributors-table th,
-        .contributors-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        .contributors-table th {
-            background: #f8f9fa;
-            color: #667eea;
-            font-weight: 600;
-        }
-        .contributors-table tr:hover {
-            background: #f8f9fa;
-        }
-        .badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-left: 5px;
-        }
-        .badge-primary {
-            background: #667eea;
-            color: white;
-        }
-        .badge-success {
-            background: #10b981;
-            color: white;
-        }
-        .repositories-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }
-        .repo-card {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            border-left: 4px solid #667eea;
-        }
-        .repo-card h4 {
-            color: #333;
-            margin-bottom: 10px;
-        }
-        .repo-stats {
-            display: flex;
-            gap: 15px;
-            font-size: 14px;
-            color: #666;
-        }
-        .repo-stat {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .filters {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .filters h3 {
-            color: #667eea;
-            margin-bottom: 15px;
-            font-size: 18px;
-        }
-        .filter-group {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-        .filter-item {
-            flex: 1;
-            min-width: 200px;
-        }
-        .filter-item label {
-            display: block;
-            margin-bottom: 5px;
-            color: #666;
-            font-size: 14px;
-            font-weight: 500;
-        }
-        .filter-item input,
-        .filter-item select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.2s;
-        }
-        .filter-item input:focus,
-        .filter-item select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .filter-item input::placeholder {
-            color: #999;
-        }
-        .filter-actions {
-            display: flex;
-            gap: 10px;
-            align-items: flex-end;
-        }
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
+        .sortable {
             cursor: pointer;
-            transition: all 0.2s;
+            user-select: none;
+            position: relative;
         }
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-        .btn-primary:hover {
-            background: #5568d3;
-        }
-        .btn-secondary {
-            background: #f0f0f0;
-            color: #333;
-        }
-        .btn-secondary:hover {
-            background: #e0e0e0;
-        }
-        .hidden {
-            display: none !important;
-        }
-        .filter-info {
-            margin-top: 10px;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 6px;
-            font-size: 14px;
-            color: #666;
+        .sortable:hover {
+            background-color: #f1f5f9;
         }
     </style>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 GitHub Dashboard - 分析レポート</h1>
-            <p>収集日時: {{ collected_at }}</p>
-            <p>分析期間: 直近1年間 ({{ start_date }} ～ {{ collected_at }})</p>
+<body x-data="dashboard()" class="min-h-screen p-5 text-gray-800">
+    <div class="max-w-7xl mx-auto">
+        <div class="bg-white rounded-xl p-8 mb-5 shadow-lg">
+            <h1 class="text-primary text-3xl font-bold mb-2">📊 GitHub Dashboard - 分析レポート</h1>
+            <p class="text-gray-600">収集日時: {{ collected_at }}</p>
+            <p class="text-gray-600">分析期間: 直近1年間 ({{ start_date }} ～ {{ collected_at }})</p>
         </div>
 
-        <div class="filters">
-            <h3>🔍 フィルタリング</h3>
-            <div class="filter-group">
-                <div class="filter-item">
-                    <label for="contributorFilter">コントリビューター名</label>
-                    <input type="text" id="contributorFilter" placeholder="ユーザー名で検索...">
-                </div>
-                <div class="filter-item">
-                    <label for="repoFilter">リポジトリ名</label>
-                    <select id="repoFilter">
-                        <option value="">すべてのリポジトリ</option>
-                        {% for repo_data in repositories %}
-                        <option value="{{ repo_data.repository }}">{{ repo_data.repository }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="filter-actions">
-                    <button class="btn btn-primary" onclick="applyFilters()">適用</button>
-                    <button class="btn btn-secondary" onclick="clearFilters()">クリア</button>
-                </div>
-            </div>
-            <div class="filter-info" id="filterInfo"></div>
-        </div>
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h3>総PR数</h3>
-                <div class="value">{{ total_prs }}</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mb-5">
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">総PR数</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(total_prs) }}</div>
             </div>
-            <div class="stat-card">
-                <h3>マージ済みPR</h3>
-                <div class="value">{{ total_merged_prs }}</div>
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">マージ済みPR</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(total_merged_prs) }}</div>
             </div>
-            <div class="stat-card">
-                <h3>総コミット数</h3>
-                <div class="value">{{ total_commits }}</div>
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">総コミット数</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(total_commits) }}</div>
             </div>
-            <div class="stat-card">
-                <h3>追加行数</h3>
-                <div class="value">{{ "{:,}".format(total_additions) }}</div>
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">追加行数</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(total_additions) }}</div>
             </div>
-            <div class="stat-card">
-                <h3>削除行数</h3>
-                <div class="value">{{ "{:,}".format(total_deletions) }}</div>
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">削除行数</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(total_deletions) }}</div>
             </div>
-            <div class="stat-card">
-                <h3>コントリビューター数</h3>
-                <div class="value">{{ contributors_list|length }}</div>
+            <div class="bg-white rounded-xl p-6 shadow-lg transition-transform hover:-translate-y-1">
+                <h3 class="text-primary text-xs uppercase tracking-wide mb-2">コントリビューター数</h3>
+                <div class="text-4xl font-bold text-gray-800">{{ "{:,}".format(contributors_list|length) }}</div>
             </div>
         </div>
 
-        <div class="section">
-            <h2>📈 月ごとの活動状況</h2>
-            <div class="chart-container">
+        <div class="bg-white rounded-xl p-8 mb-5 shadow-lg">
+            <h2 class="text-primary text-2xl font-semibold mb-5 pb-3 border-b-2 border-gray-100">📈 月ごとの活動状況</h2>
+            <div class="relative h-96 mb-8">
                 <canvas id="monthlyChart"></canvas>
             </div>
         </div>
 
-        <div class="section">
-            <h2>💻 Code Frequency (月ごと)</h2>
-            <div class="chart-container">
+        <div class="bg-white rounded-xl p-8 mb-5 shadow-lg">
+            <h2 class="text-primary text-2xl font-semibold mb-5 pb-3 border-b-2 border-gray-100">💻 Code Frequency (月ごと)</h2>
+            <div class="relative h-96 mb-8">
                 <canvas id="codeFrequencyChart"></canvas>
             </div>
         </div>
 
-        <div class="section">
-            <h2>👥 コントリビューター別統計</h2>
-            <table class="contributors-table">
+        <div class="bg-white rounded-xl p-8 mb-5 shadow-lg">
+            <h2 class="text-primary text-2xl font-semibold mb-5 pb-3 border-b-2 border-gray-100">👥 コントリビューター別統計</h2>
+            <div class="mb-5 flex items-center gap-4 flex-wrap">
+                <div class="flex items-center gap-2">
+                    <label for="monthFilter" class="font-semibold text-primary">月を選択:</label>
+                    <select id="monthFilter" x-model="filters.month" @change="updateContributorsByMonth()" class="px-3 py-2 border-2 border-primary rounded-lg text-sm bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary">
+                    <option value="">すべての期間（累計）</option>
+                    {% for month in monthly_labels %}
+                    <option value="{{ month }}">{{ month }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+                <div class="flex items-center gap-2" x-show="filters.month">
+                    <input type="checkbox" id="showMonthOverMonth" x-model="filters.showMonthOverMonth" @change="updateContributorsByMonth()" class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary cursor-pointer">
+                    <label for="showMonthOverMonth" class="text-sm text-gray-700 cursor-pointer">前月比を表示</label>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full border-collapse mt-5">
                 <thead>
                     <tr>
-                        <th>順位</th>
-                        <th>ユーザー名</th>
-                        <th>コミット</th>
-                        <th>PR作成</th>
-                        <th>PRマージ</th>
-                        <th>PRレビュー</th>
-                        <th>追加行数</th>
-                        <th>削除行数</th>
-                        <th>関与リポジトリ</th>
+                            <th class="px-3 py-3 text-left border-b border-gray-200 bg-gray-50 text-primary font-semibold">順位</th>
+                            <th class="px-3 py-3 text-left border-b border-gray-200 bg-gray-50 text-primary font-semibold">ユーザー名</th>
+                            <th @click="sortTable('commits')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">コミット</th>
+                            <th @click="sortTable('prs_created')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">PR作成</th>
+                            <th @click="sortTable('prs_merged')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">PRマージ</th>
+                            <th @click="sortTable('prs_reviewed')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">PRレビュー</th>
+                            <th @click="sortTable('additions')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">追加行数</th>
+                            <th @click="sortTable('deletions')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">削除行数</th>
+                            <th @click="sortTable('repositories')" class="sortable px-3 py-3 text-right border-b border-gray-200 bg-gray-50 text-primary font-semibold">関与リポジトリ</th>
                     </tr>
                 </thead>
                 <tbody id="contributorsTableBody">
                     {% for contributor in contributors_list[:50] %}
-                    <tr data-contributor="{{ contributor.name|lower }}" data-repos="{{ contributor.repos_list|join(',')|lower }}">
-                        <td class="rank">{{ loop.index }}</td>
-                        <td><strong>{{ contributor.name }}</strong>{% if contributor.devin_breakdown.prs_merged > 0 %}<br><span style="font-size: 12px; color: #666; font-weight: normal;">(devin: PR{{ contributor.devin_breakdown.prs_merged }}, +{{ "{:,}".format(contributor.devin_breakdown.additions) }}/-{{ "{:,}".format(contributor.devin_breakdown.deletions) }})</span>{% endif %}</td>
-                        <td>{{ contributor.commits }}</td>
-                        <td>{{ contributor.prs_created }}</td>
-                        <td>{{ contributor.prs_merged }}</td>
-                        <td>{{ contributor.prs_reviewed }}</td>
-                        <td>{{ "{:,}".format(contributor.additions) }}</td>
-                        <td>{{ "{:,}".format(contributor.deletions) }}</td>
-                        <td>{{ contributor.repositories }}</td>
+                        <tr data-contributor="{{ contributor.name|lower }}" data-repos="{{ contributor.repos_list|join(',')|lower }}" data-all-stats='{{ contributor|tojson }}' class="hover:bg-gray-50">
+                            <td class="rank px-3 py-3 border-b border-gray-100">{{ loop.index }}</td>
+                            <td class="px-3 py-3 border-b border-gray-100"><strong>{{ contributor.name }}</strong>{% if contributor.devin_breakdown.prs_merged > 0 %}<br><span class="text-xs text-gray-600 font-normal">(内Devin PR{{ contributor.devin_breakdown.prs_merged }}, +{{ "{:,}".format(contributor.devin_breakdown.additions) }}/-{{ "{:,}".format(contributor.devin_breakdown.deletions) }})</span>{% endif %}</td>
+                            <td class="stat-commits px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.commits) }}</td>
+                            <td class="stat-prs-created px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.prs_created) }}</td>
+                            <td class="stat-prs-merged px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.prs_merged) }}</td>
+                            <td class="stat-prs-reviewed px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.prs_reviewed) }}</td>
+                            <td class="stat-additions px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.additions) }}</td>
+                            <td class="stat-deletions px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.deletions) }}</td>
+                            <td class="px-3 py-3 text-right border-b border-gray-100">{{ "{:,}".format(contributor.repositories) }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
+                <tfoot id="contributorsTableFooter">
+                    <tr class="bg-gray-100 font-bold border-t-2 border-gray-300">
+                        <td class="px-3 py-3 text-center" colspan="2">合計</td>
+                        <td id="total-commits" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.commits) }}</td>
+                        <td id="total-prs-created" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.prs_created) }}</td>
+                        <td id="total-prs-merged" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.prs_merged) }}</td>
+                        <td id="total-prs-reviewed" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.prs_reviewed) }}</td>
+                        <td id="total-additions" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.additions) }}</td>
+                        <td id="total-deletions" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.deletions) }}</td>
+                        <td id="total-repositories" class="px-3 py-3 text-right">{{ "{:,}".format(total_stats.repositories) }}</td>
+                    </tr>
+                </tfoot>
             </table>
+            </div>
         </div>
 
-        <div class="section">
-            <h2>📦 対象リポジトリ</h2>
-            <div class="repositories-list" id="repositoriesList">
+        <div class="bg-white rounded-xl p-8 mb-5 shadow-lg">
+            <h2 class="text-primary text-2xl font-semibold mb-5 pb-3 border-b-2 border-gray-100">📦 対象リポジトリ</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-5" id="repositoriesList">
                 {% for repo_data in repositories %}
-                <div class="repo-card" data-repo="{{ repo_data.repository }}">
-                    <h4>{{ repo_data.repository }}</h4>
-                    <div class="repo-stats">
-                        <div class="repo-stat">
+                <div class="repo-card bg-gray-50 rounded-lg p-4 border-l-4 border-primary" data-repo="{{ repo_data.repository }}">
+                    <h4 class="text-gray-800 font-semibold mb-2">{{ repo_data.repository }}</h4>
+                    <div class="flex gap-4 text-sm text-gray-600">
+                        <div class="flex items-center gap-1">
                             <span>PR:</span>
                             <strong>{{ repo_data.prs|length }}</strong>
                         </div>
-                        <div class="repo-stat">
+                        <div class="flex items-center gap-1">
                             <span>コントリビューター:</span>
                             <strong>{{ repo_data.contributions|length }}</strong>
                         </div>
@@ -530,13 +387,34 @@ def generate_html(data, aggregated):
     </div>
 
     <script>
-        // グローバル変数としてチャートを保持
-        let monthlyChart = null;
-        let codeFrequencyChart = null;
+        // Alpine.jsの状態管理
+        function dashboard() {
+            return {
+                filters: {
+                    month: '',
+                    showMonthOverMonth: true
+                },
+                sortColumn: null,
+                sortDirection: 'desc',
+                monthlyChart: null,
+                codeFrequencyChart: null,
+                allContributors: [],
+                monthlyContributionsData: {{ monthly_contributions_data|tojson }},
+                allPRData: {{ pr_data_for_charts|tojson }},
 
+                init() {
+                    // グローバルインスタンスとして保存（updateChartsGlobalからアクセス可能にするため）
+                    window.dashboardInstance = this;
+                    // チャートを初期化
+                    this.initCharts();
+                    // コントリビューターリストを初期化
+                    this.initContributors();
+                },
+
+                initCharts() {
         // 月ごとの活動状況チャート
         const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
-        monthlyChart = new Chart(monthlyCtx, {
+                    this.monthlyChart = new Chart(monthlyCtx, {
             type: 'line',
             data: {
                 labels: {{ monthly_labels|tojson }},
@@ -556,11 +434,20 @@ def generate_html(data, aggregated):
                         tension: 0.4
                     },
                     {
-                        label: 'コントリビューター数',
-                        data: {{ monthly_contributors|tojson }},
-                        borderColor: 'rgb(245, 158, 11)',
-                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                        tension: 0.4
+                        label: '1人あたりのPR作成数',
+                        data: {{ monthly_prs_created_per_contributor|tojson }},
+                        borderColor: 'rgb(139, 92, 246)',
+                        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                        tension: 0.4,
+                        borderDash: [5, 5]
+                    },
+                    {
+                        label: '1人あたりのPRマージ数',
+                        data: {{ monthly_prs_merged_per_contributor|tojson }},
+                        borderColor: 'rgb(34, 197, 94)',
+                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        tension: 0.4,
+                        borderDash: [5, 5]
                     }
                 ]
             },
@@ -568,25 +455,16 @@ def generate_html(data, aggregated):
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        position: 'top',
-                    },
-                    title: {
-                        display: true,
-                        text: '月ごとの活動状況'
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
-                }
+                                legend: { position: 'top' },
+                                title: { display: true, text: '月ごとの活動状況' }
+                            },
+                            scales: { y: { beginAtZero: true } }
             }
         });
 
         // Code Frequencyチャート
         const codeFreqCtx = document.getElementById('codeFrequencyChart').getContext('2d');
-        codeFrequencyChart = new Chart(codeFreqCtx, {
+                    this.codeFrequencyChart = new Chart(codeFreqCtx, {
             type: 'bar',
             data: {
                 labels: {{ monthly_labels|tojson }},
@@ -607,293 +485,230 @@ def generate_html(data, aggregated):
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: {
-                        position: 'top',
-                    },
-                    title: {
-                        display: true,
-                        text: 'Code Frequency (追加・削除行数)'
-                    }
+                                legend: { position: 'top' },
+                                title: { display: true, text: 'Code Frequency (追加・削除行数)' }
+                            },
+                            scales: { y: { beginAtZero: true } }
+                        }
+                    });
                 },
-                scales: {
-                    y: {
-                        beginAtZero: true
+
+                initContributors() {
+                    const rows = document.querySelectorAll('#contributorsTableBody tr');
+                    this.allContributors = Array.from(rows).map(row => ({
+                        element: row,
+                        name: row.getAttribute('data-contributor') || '',
+                        repos: (row.getAttribute('data-repos') || '').toLowerCase(),
+                        stats: JSON.parse(row.getAttribute('data-all-stats') || '{}')
+                    }));
+
+                    // 初期合計値を更新
+                    this.updateContributorsByMonth();
+                },
+
+                sortTable(column) {
+                    if (this.sortColumn === column) {
+                        this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        this.sortColumn = column;
+                        this.sortDirection = 'desc';
                     }
+
+                    this.allContributors.sort((a, b) => {
+                        const aStats = this.getStatsForMonth(a.stats, this.filters.month);
+                        const bStats = this.getStatsForMonth(b.stats, this.filters.month);
+                        let aVal, bVal;
+
+                        if (column === 'repositories') {
+                            aVal = aStats.repositories || (aStats.repos_list ? aStats.repos_list.length : 0);
+                            bVal = bStats.repositories || (bStats.repos_list ? bStats.repos_list.length : 0);
+                } else {
+                            aVal = aStats[column] || 0;
+                            bVal = bStats[column] || 0;
+                        }
+
+                        return this.sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+                    });
+
+                    // DOMを再配置
+                    const tbody = document.querySelector('#contributorsTableBody');
+                    this.allContributors.forEach(contributor => {
+                        tbody.appendChild(contributor.element);
+                    });
+
+                    // 合計値を更新
+                    this.updateContributorsByMonth();
+                },
+
+                getStatsForMonth(stats, month) {
+                    if (!month || !this.monthlyContributionsData[month]) {
+                        return stats;
+                    }
+                    const monthly = this.monthlyContributionsData[month][stats.name] || {};
+                    return { ...stats, ...monthly };
+                },
+
+                getPreviousMonth(month) {
+                    if (!month) return null;
+                    const [year, monthNum] = month.split('-').map(Number);
+                    let prevYear = year;
+                    let prevMonth = monthNum - 1;
+                    if (prevMonth < 1) {
+                        prevMonth = 12;
+                        prevYear -= 1;
+                    }
+                    return `${prevYear}-${String(prevMonth).padStart(2, '0')}`;
+                },
+
+                calculateMonthOverMonth(current, previous) {
+                    if (previous === 0 && current > 0) {
+                        return { value: '+∞', isPositive: true };
+                    }
+                    if (previous === 0 && current === 0) {
+                        return null;
+                    }
+                    const diff = current - previous;
+                    const percent = previous !== 0 ? ((diff / previous) * 100).toFixed(1) : '0.0';
+                    const sign = diff >= 0 ? '+' : '';
+                    return {
+                        value: `${sign}${percent}%`,
+                        isPositive: diff >= 0
+                    };
+                },
+
+                updateContributorsByMonth() {
+                    const selectedMonth = this.filters.month;
+                    const previousMonth = selectedMonth ? this.getPreviousMonth(selectedMonth) : null;
+
+                    // 合計値を計算するための変数
+                    let totalCommits = 0;
+                    let totalPRsCreated = 0;
+                    let totalPRsMerged = 0;
+                    let totalPRsReviewed = 0;
+                    let totalAdditions = 0;
+                    let totalDeletions = 0;
+                    const uniqueRepos = new Set();
+
+                    this.allContributors.forEach(contributor => {
+                        const stats = this.getStatsForMonth(contributor.stats, selectedMonth);
+                        const prevStats = previousMonth ? this.getStatsForMonth(contributor.stats, previousMonth) : null;
+                        const row = contributor.element;
+
+                        // 統計値を更新
+                        const commitsCell = row.querySelector('.stat-commits');
+                        const prsCreatedCell = row.querySelector('.stat-prs-created');
+                        const prsMergedCell = row.querySelector('.stat-prs-merged');
+                        const prsReviewedCell = row.querySelector('.stat-prs-reviewed');
+                        const additionsCell = row.querySelector('.stat-additions');
+                        const deletionsCell = row.querySelector('.stat-deletions');
+
+                        const updateCellWithComparison = (cell, currentValue, prevValue, formatFn = (v) => v) => {
+                            if (!cell) return;
+                            const current = currentValue || 0;
+                            const previous = prevValue || 0;
+                            let html = formatFn(current);
+
+                            if (selectedMonth && previousMonth && this.monthlyContributionsData[previousMonth] && this.filters.showMonthOverMonth) {
+                                const comparison = this.calculateMonthOverMonth(current, previous);
+                                if (comparison) {
+                                    const colorClass = comparison.isPositive ? 'text-green-600' : 'text-red-600';
+                                    html += `<br><span class="text-xs ${colorClass}">(${comparison.value})</span>`;
+                                }
+                            }
+                            cell.innerHTML = html;
+                        };
+
+                        updateCellWithComparison(commitsCell, stats.commits, prevStats?.commits, (v) => v.toLocaleString());
+                        updateCellWithComparison(prsCreatedCell, stats.prs_created, prevStats?.prs_created, (v) => v.toLocaleString());
+                        updateCellWithComparison(prsMergedCell, stats.prs_merged, prevStats?.prs_merged, (v) => v.toLocaleString());
+                        updateCellWithComparison(prsReviewedCell, stats.prs_reviewed, prevStats?.prs_reviewed, (v) => v.toLocaleString());
+                        updateCellWithComparison(additionsCell, stats.additions, prevStats?.additions, (v) => v.toLocaleString());
+                        updateCellWithComparison(deletionsCell, stats.deletions, prevStats?.deletions, (v) => v.toLocaleString());
+
+                        // 合計値に加算
+                        totalCommits += stats.commits || 0;
+                        totalPRsCreated += stats.prs_created || 0;
+                        totalPRsMerged += stats.prs_merged || 0;
+                        totalPRsReviewed += stats.prs_reviewed || 0;
+                        totalAdditions += stats.additions || 0;
+                        totalDeletions += stats.deletions || 0;
+
+                        // リポジトリのユニーク数を計算
+                        if (stats.repos_list && Array.isArray(stats.repos_list)) {
+                            stats.repos_list.forEach(repo => uniqueRepos.add(repo));
+                        }
+                    });
+
+                    // 合計行を更新
+                    this.updateTotalRow({
+                        commits: totalCommits,
+                        prs_created: totalPRsCreated,
+                        prs_merged: totalPRsMerged,
+                        prs_reviewed: totalPRsReviewed,
+                        additions: totalAdditions,
+                        deletions: totalDeletions,
+                        repositories: uniqueRepos.size
+                    });
+                },
+
+                updateTotalRow(totals) {
+                    const commitsCell = document.getElementById('total-commits');
+                    const prsCreatedCell = document.getElementById('total-prs-created');
+                    const prsMergedCell = document.getElementById('total-prs-merged');
+                    const prsReviewedCell = document.getElementById('total-prs-reviewed');
+                    const additionsCell = document.getElementById('total-additions');
+                    const deletionsCell = document.getElementById('total-deletions');
+                    const repositoriesCell = document.getElementById('total-repositories');
+
+                    if (commitsCell) commitsCell.textContent = (totals.commits || 0).toLocaleString();
+                    if (prsCreatedCell) prsCreatedCell.textContent = (totals.prs_created || 0).toLocaleString();
+                    if (prsMergedCell) prsMergedCell.textContent = (totals.prs_merged || 0).toLocaleString();
+                    if (prsReviewedCell) prsReviewedCell.textContent = (totals.prs_reviewed || 0).toLocaleString();
+                    if (additionsCell) additionsCell.textContent = (totals.additions || 0).toLocaleString();
+                    if (deletionsCell) deletionsCell.textContent = (totals.deletions || 0).toLocaleString();
+                    if (repositoriesCell) repositoriesCell.textContent = (totals.repositories || 0).toLocaleString();
                 }
             }
-        });
-
-        // フィルタリング機能
-        function applyFilters() {
-            const contributorFilter = document.getElementById('contributorFilter').value.toLowerCase().trim();
-            const repoFilter = document.getElementById('repoFilter').value;
-            const filterInfo = document.getElementById('filterInfo');
-
-            let visibleCount = 0;
-            let totalCount = 0;
-
-            // フィルタリングされたコントリビューターのリストを収集
-            const visibleContributors = new Set();
-
-            // コントリビューター テーブルのフィルタリング
-            const tableRows = document.querySelectorAll('#contributorsTableBody tr');
-            tableRows.forEach((row, index) => {
-                totalCount++;
-                const contributorName = row.getAttribute('data-contributor') || '';
-                const contributorRepos = (row.getAttribute('data-repos') || '').toLowerCase();
-
-                let show = true;
-
-                // コントリビューター名でフィルタリング
-                if (contributorFilter && !contributorName.includes(contributorFilter)) {
-                    show = false;
-                }
-
-                // リポジトリでフィルタリング
-                if (repoFilter) {
-                    const repoFilterLower = repoFilter.toLowerCase();
-                    if (!contributorRepos.includes(repoFilterLower)) {
-                        show = false;
-                    }
-                }
-
-                if (show) {
-                    row.classList.remove('hidden');
-                    visibleCount++;
-                    // 順位を更新
-                    const rankCell = row.querySelector('.rank');
-                    if (rankCell) {
-                        rankCell.textContent = visibleCount;
-                    }
-                    // 表示されているコントリビューターを記録
-                    visibleContributors.add(contributorName);
-                } else {
-                    row.classList.add('hidden');
-                }
-            });
-
-            // リポジトリカードのフィルタリング
-            const repoCards = document.querySelectorAll('#repositoriesList .repo-card');
-            repoCards.forEach(card => {
-                const repoName = card.getAttribute('data-repo') || '';
-
-                let show = true;
-
-                // リポジトリ名でフィルタリング
-                if (repoFilter && repoName !== repoFilter) {
-                    show = false;
-                }
-
-                if (show) {
-                    card.classList.remove('hidden');
-                } else {
-                    card.classList.add('hidden');
-                }
-            });
-
-            // フィルタ情報を表示
-            let infoText = '';
-            if (contributorFilter || repoFilter) {
-                infoText = `表示中: ${visibleCount} / ${totalCount} コントリビューター`;
-                if (repoFilter) {
-                    infoText += ` (リポジトリ: ${repoFilter})`;
-                }
-                if (contributorFilter) {
-                    infoText += ` (検索: "${contributorFilter}")`;
-                }
-            } else {
-                infoText = '';
-            }
-            filterInfo.textContent = infoText;
-            filterInfo.style.display = infoText ? 'block' : 'none';
-
-            // グラフを更新（フィルタリングされたコントリビューターのみ）
-            updateCharts(visibleContributors, contributorFilter, repoFilter);
         }
 
         // PRデータをJavaScriptで利用可能にする
         const allPRData = {{ pr_data_for_charts|tojson }};
+        const monthlyContributionsData = {{ monthly_contributions_data|tojson }};
+        const allContributorsData = {{ contributors_list|tojson }};
 
-        // グラフを更新する関数
-        function updateCharts(visibleContributors, contributorFilter, repoFilter) {
+        // グラフを更新する関数（Alpine.jsから呼び出し可能）
+        function updateChartsGlobal() {
             // 元のデータを保持
             const originalMonthlyLabels = {{ monthly_labels|tojson }};
             const originalMonthlyPRsCreated = {{ monthly_prs_created|tojson }};
             const originalMonthlyPRsMerged = {{ monthly_prs_merged|tojson }};
-            const originalMonthlyContributors = {{ monthly_contributors|tojson }};
             const originalMonthlyAdditions = {{ monthly_additions|tojson }};
             const originalMonthlyDeletions = {{ monthly_deletions|tojson }};
 
-            // フィルタリングが適用されている場合
-            if (contributorFilter || repoFilter) {
-                // フィルタリングされたPRデータで月ごとの統計を再計算
-                const filteredMonthlyStats = {};
-                const filteredCodeFrequency = {};
-                const contributorSet = new Set();
-
-                allPRData.forEach(pr => {
-                    const prAuthor = (pr.author || '').toLowerCase();
-                    const prRepo = (pr.repository || '').toLowerCase();
-
-                    // フィルタリング条件をチェック
-                    let include = true;
-                    if (contributorFilter && !prAuthor.includes(contributorFilter)) {
-                        include = false;
-                    }
-                    if (repoFilter && !prRepo.includes(repoFilter.toLowerCase())) {
-                        include = false;
-                    }
-
-                    if (!include) return;
-
-                    // 月を取得
-                    if (pr.created_at) {
-                        const createdDate = new Date(pr.created_at);
-                        const monthKey = createdDate.getFullYear() + '-' + String(createdDate.getMonth() + 1).padStart(2, '0');
-
-                        if (!filteredMonthlyStats[monthKey]) {
-                            filteredMonthlyStats[monthKey] = {
-                                prs_created: 0,
-                                prs_merged: 0,
-                                additions: 0,
-                                deletions: 0,
-                                contributors: new Set()
-                            };
-                        }
-
-                        filteredMonthlyStats[monthKey].prs_created += 1;
-                        if (pr.merged_at) {
-                            const mergedDate = new Date(pr.merged_at);
-                            const mergeMonthKey = mergedDate.getFullYear() + '-' + String(mergedDate.getMonth() + 1).padStart(2, '0');
-
-                            if (!filteredMonthlyStats[mergeMonthKey]) {
-                                filteredMonthlyStats[mergeMonthKey] = {
-                                    prs_created: 0,
-                                    prs_merged: 0,
-                                    additions: 0,
-                                    deletions: 0,
-                                    contributors: new Set()
-                                };
-                            }
-
-                            filteredMonthlyStats[mergeMonthKey].prs_merged += 1;
-
-                            // devin-botの場合はマージした人をカウント
-                            const contributor = pr.author === 'devin-ai-integration[bot]' && pr.merged_by ? pr.merged_by : pr.author;
-                            filteredMonthlyStats[mergeMonthKey].contributors.add(contributor);
-                        }
-
-                        filteredMonthlyStats[monthKey].additions += pr.additions || 0;
-                        filteredMonthlyStats[monthKey].deletions += pr.deletions || 0;
-                        filteredMonthlyStats[monthKey].contributors.add(prAuthor);
-                    }
-
-                    // Code frequency（簡易版：PRの追加・削除行数を使用）
-                    if (pr.created_at) {
-                        const createdDate = new Date(pr.created_at);
-                        const monthKey = createdDate.getFullYear() + '-' + String(createdDate.getMonth() + 1).padStart(2, '0');
-
-                        if (!filteredCodeFrequency[monthKey]) {
-                            filteredCodeFrequency[monthKey] = { additions: 0, deletions: 0 };
-                        }
-                        filteredCodeFrequency[monthKey].additions += pr.additions || 0;
-                        filteredCodeFrequency[monthKey].deletions += pr.deletions || 0;
-                    }
-                });
-
-                // 月ごとのデータを配列に変換
-                const allFilteredMonths = new Set([...Object.keys(filteredMonthlyStats), ...Object.keys(filteredCodeFrequency)]);
-                const sortedFilteredMonths = Array.from(allFilteredMonths).sort();
-
-                const filteredPRsCreated = [];
-                const filteredPRsMerged = [];
-                const filteredContributors = [];
-                const filteredAdditions = [];
-                const filteredDeletions = [];
-
-                sortedFilteredMonths.forEach(month => {
-                    const stats = filteredMonthlyStats[month] || { prs_created: 0, prs_merged: 0, contributors: new Set() };
-                    const freq = filteredCodeFrequency[month] || { additions: 0, deletions: 0 };
-
-                    filteredPRsCreated.push(stats.prs_created);
-                    filteredPRsMerged.push(stats.prs_merged);
-                    filteredContributors.push(stats.contributors instanceof Set ? stats.contributors.size : stats.contributors);
-                    filteredAdditions.push(freq.additions);
-                    filteredDeletions.push(freq.deletions);
-                });
-
-                // グラフを更新
-                if (monthlyChart) {
-                    monthlyChart.data.labels = sortedFilteredMonths;
-                    monthlyChart.data.datasets[0].data = filteredPRsCreated;
-                    monthlyChart.data.datasets[1].data = filteredPRsMerged;
-                    monthlyChart.data.datasets[2].data = filteredContributors;
-                    monthlyChart.options.plugins.title.text = '月ごとの活動状況 (フィルタリング適用中)';
-                    monthlyChart.update();
-                }
-                if (codeFrequencyChart) {
-                    codeFrequencyChart.data.labels = sortedFilteredMonths;
-                    codeFrequencyChart.data.datasets[0].data = filteredAdditions;
-                    codeFrequencyChart.data.datasets[1].data = filteredDeletions;
-                    codeFrequencyChart.options.plugins.title.text = 'Code Frequency (フィルタリング適用中)';
-                    codeFrequencyChart.update();
-                }
-            } else {
-                // フィルタリングが解除された場合、元のデータに戻す
-                if (monthlyChart) {
-                    monthlyChart.data.labels = originalMonthlyLabels;
-                    monthlyChart.data.datasets[0].data = originalMonthlyPRsCreated;
-                    monthlyChart.data.datasets[1].data = originalMonthlyPRsMerged;
-                    monthlyChart.data.datasets[2].data = originalMonthlyContributors;
-                    monthlyChart.options.plugins.title.text = '月ごとの活動状況';
-                    monthlyChart.update();
-                }
-                if (codeFrequencyChart) {
-                    codeFrequencyChart.data.labels = originalMonthlyLabels;
-                    codeFrequencyChart.data.datasets[0].data = originalMonthlyAdditions;
-                    codeFrequencyChart.data.datasets[1].data = originalMonthlyDeletions;
-                    codeFrequencyChart.options.plugins.title.text = 'Code Frequency (追加・削除行数)';
-                    codeFrequencyChart.update();
-                }
+            // 常に元のデータを表示
+            if (window.dashboardInstance && window.dashboardInstance.monthlyChart) {
+                const originalMonthlyPRsCreatedPerContributor = {{ monthly_prs_created_per_contributor|tojson }};
+                const originalMonthlyPRsMergedPerContributor = {{ monthly_prs_merged_per_contributor|tojson }};
+                window.dashboardInstance.monthlyChart.data.labels = originalMonthlyLabels;
+                window.dashboardInstance.monthlyChart.data.datasets[0].data = originalMonthlyPRsCreated;
+                window.dashboardInstance.monthlyChart.data.datasets[1].data = originalMonthlyPRsMerged;
+                window.dashboardInstance.monthlyChart.data.datasets[2].data = originalMonthlyPRsCreatedPerContributor;
+                window.dashboardInstance.monthlyChart.data.datasets[3].data = originalMonthlyPRsMergedPerContributor;
+                window.dashboardInstance.monthlyChart.options.plugins.title.text = '月ごとの活動状況';
+                window.dashboardInstance.monthlyChart.update();
+            }
+            if (window.dashboardInstance && window.dashboardInstance.codeFrequencyChart) {
+                window.dashboardInstance.codeFrequencyChart.data.labels = originalMonthlyLabels;
+                window.dashboardInstance.codeFrequencyChart.data.datasets[0].data = originalMonthlyAdditions;
+                window.dashboardInstance.codeFrequencyChart.data.datasets[1].data = originalMonthlyDeletions;
+                window.dashboardInstance.codeFrequencyChart.options.plugins.title.text = 'Code Frequency (追加・削除行数)';
+                window.dashboardInstance.codeFrequencyChart.update();
             }
         }
 
-        function clearFilters() {
-            document.getElementById('contributorFilter').value = '';
-            document.getElementById('repoFilter').value = '';
-            document.getElementById('filterInfo').textContent = '';
-            document.getElementById('filterInfo').style.display = 'none';
-
-            // すべての行とカードを表示
-            document.querySelectorAll('#contributorsTableBody tr').forEach((row, index) => {
-                row.classList.remove('hidden');
-                const rankCell = row.querySelector('.rank');
-                if (rankCell) {
-                    rankCell.textContent = index + 1;
-                }
-            });
-            document.querySelectorAll('#repositoriesList .repo-card').forEach(card => {
-                card.classList.remove('hidden');
-            });
-
-            // グラフを元に戻す
-            updateCharts(new Set(), '', '');
-        }
-
-        // Enterキーでフィルタリング
-        document.getElementById('contributorFilter').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                applyFilters();
-            }
-        });
-
-        // リポジトリ選択時に自動でフィルタリング
-        document.getElementById('repoFilter').addEventListener('change', function() {
-            applyFilters();
-        });
     </script>
-</body>
-</html>'''
+    </body>
+    </html>'''
 
     template = Template(template_str)
 
@@ -902,8 +717,29 @@ def generate_html(data, aggregated):
     monthly_prs_created = [d['prs_created'] for d in monthly_data]
     monthly_prs_merged = [d['prs_merged'] for d in monthly_data]
     monthly_contributors = [d['contributors'] for d in monthly_data]
+
+    # monthly_contributionsから正確なコントリビューター数を計算
+    monthly_contributors_from_contributions = []
+    for month in monthly_labels:
+        contributors_set = set()
+        if month in aggregated['monthly_contributions']:
+            contributors_set = set(aggregated['monthly_contributions'][month].keys())
+        monthly_contributors_from_contributions.append(len(contributors_set))
+
+    # コントリビューター1人あたりのPR作成数・マージ数を計算（monthly_contributionsから計算したコントリビューター数を使用）
+    monthly_prs_created_per_contributor = [
+        round(prs / contributors, 2) if contributors > 0 else 0
+        for prs, contributors in zip(monthly_prs_created, monthly_contributors_from_contributions)
+    ]
+    monthly_prs_merged_per_contributor = [
+        round(prs / contributors, 2) if contributors > 0 else 0
+        for prs, contributors in zip(monthly_prs_merged, monthly_contributors_from_contributions)
+    ]
     monthly_additions = [d['additions'] for d in monthly_data]
     monthly_deletions = [d['deletions'] for d in monthly_data]
+
+    # 月別コントリビューター統計データを準備（JavaScript用）
+    monthly_contributions_data = aggregated.get('monthly_contributions', {})
 
     html = template.render(
         collected_at=data['collected_at'],
@@ -914,15 +750,20 @@ def generate_html(data, aggregated):
         total_additions=aggregated['total_additions'],
         total_deletions=aggregated['total_deletions'],
         contributors_list=contributors_list,
+        total_stats=total_stats,
         monthly_labels=monthly_labels,
         monthly_prs_created=monthly_prs_created,
         monthly_prs_merged=monthly_prs_merged,
         monthly_contributors=monthly_contributors,
+        monthly_prs_created_per_contributor=monthly_prs_created_per_contributor,
+        monthly_prs_merged_per_contributor=monthly_prs_merged_per_contributor,
         monthly_additions=monthly_additions,
         monthly_deletions=monthly_deletions,
         repositories=data['repositories'],
         devin_breakdown=devin_breakdown_aggregated,
-        pr_data_for_charts=pr_data_for_charts
+        pr_data_for_charts=pr_data_for_charts,
+        monthly_contributions_data=monthly_contributions_data,
+        monthly_stats_data=aggregated['monthly_stats']
     )
 
     return html
