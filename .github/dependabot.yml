@@ -8,8 +8,10 @@ updates:
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 10
-    reviewers: []
-    assignees: []
+    reviewers:
+      - "tatematsu-k"
+    assignees:
+      - "tatematsu-k"
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
